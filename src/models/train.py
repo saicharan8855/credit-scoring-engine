@@ -185,6 +185,7 @@ def log_to_mlflow(model_name: str,
     """
 
     # Set the experiment name
+    mlflow.set_tracking_uri('file:///C:/Users/sai charan/OneDrive/Desktop/credit-scoring-engine/mlflow')
     mlflow.set_experiment(experiment_name)
 
     with mlflow.start_run(run_name=model_name):
