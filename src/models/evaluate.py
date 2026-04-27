@@ -72,8 +72,8 @@ def calculate_psi(expected: np.ndarray,
     breakpoints[-1] =  np.inf
 
     # Count observations in each bin
-    expected_counts = pd.cut(expected, bins=breakpoints).value_counts(sort=False)
-    actual_counts   = pd.cut(actual,   bins=breakpoints).value_counts(sort=False)
+    expected_counts = pd.cut(expected, bins=breakpoints).value_counts().sort_index()
+    actual_counts   = pd.cut(actual,   bins=breakpoints).value_counts().sort_index()
 
     # Convert to percentages
     expected_pct = expected_counts / len(expected)
