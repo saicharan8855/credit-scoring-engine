@@ -130,7 +130,7 @@ class WoEEncoder:
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """
         Transform X by replacing each value with its WoE value.
-        Fully vectorized — no row by row loops.
+        Uses pd.cut with finite bin edges for fast vectorized transformation.
         """
 
         if not self.is_fitted:
@@ -147,34 +147,41 @@ class WoEEncoder:
             woe_table    = self.woe_tables[col]
             feature_type = self.feature_types[col]
 
-            # Build a mapping from bin to WoE value
-            woe_map = woe_table.set_index('bin')['WoE'].to_dict()
-
             if feature_type == 'numerical':
 
-                # Use numpy digitize instead of pd.cut
-                # It is much faster and does not hang on inf edges
-                edges = self.bin_edges[col]
+                # Get stored bin edges and replace inf with actual data min/max
+                edges = self.bin_edges[col].copy()
+                edges[0]  = X[col].min() - 1
+                edges[-1] = X[col].max() + 1
 
-                # Replace inf edges with actual min/max of column
-                finite_edges = edges.copy()
-                finite_edges[0]  = X[col].min() - 1
-                finite_edges[-1] = X[col].max() + 1
+                # Build woe map from bin interval to WoE value
+                # We need to recut with finite edges to get matching intervals
+                reference_cut = pd.cut(
+                    X[col],
+                    bins=edges,
+                    include_lowest=True
+                )
 
-                # digitize returns index of bin each value falls into
-                bin_indices = np.digitize(X[col].values, bins=finite_edges[1:-1])
+                # Build woe map using the actual categories produced
+                categories  = reference_cut.cat.categories
+                woe_values  = woe_table['WoE'].values
 
-                # Get the WoE values in order of bins
-                woe_values_ordered = woe_table['WoE'].values
+                # Match categories to woe values by position
+                # Both are ordered the same way — low to high bins
+                n_cats = min(len(categories), len(woe_values))
+                woe_map = {categories[i]: woe_values[i] for i in range(n_cats)}
 
-                # Map each bin index to WoE value
-                # clip to handle any out of range indices
-                bin_indices_clipped = np.clip(bin_indices, 0, len(woe_values_ordered) - 1)
-                woe_array = woe_values_ordered[bin_indices_clipped]
+                woe_series = reference_cut.map(woe_map)
 
-                X_woe[col] = woe_array
+                # Convert to float first before fillna
+                # pd.cut returns Categorical — fillna fails on Categorical
+                # with a value not in categories, so we convert first
+                woe_float  = woe_series.astype(float)
+                median_woe = woe_table['WoE'].median()
+                X_woe[col] = woe_float.fillna(median_woe)
 
             else:
+                woe_map    = dict(zip(woe_table['bin'].astype(str), woe_table['WoE']))
                 woe_series = X[col].astype(str).map(woe_map)
                 median_woe = woe_table['WoE'].median()
                 X_woe[col] = woe_series.fillna(median_woe)
