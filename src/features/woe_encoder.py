@@ -96,11 +96,16 @@ class WoEEncoder:
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """
-        Replace each feature value with its WoE score.
-        Uses the tables computed during fit().
+        Replace each value in X with its corresponding WoE value.
+        The WoE tables calculated during fit() are used here.
+        This can be applied to both train and test data.
+
+        This version uses pandas cut/qcut with the stored bin edges
+        for fast vectorized transformation instead of row by row loops.
         """
+
         if not self.is_fitted:
-            raise Exception("Call fit() before transform().")
+            raise Exception("WoEEncoder must be fitted before calling transform. Call fit() first.")
 
         X_woe = X.copy()
 
@@ -113,56 +118,46 @@ class WoEEncoder:
             feature_type = self.feature_types[col]
 
             if feature_type == 'numerical':
-                bin_boundaries = woe_table['bin'].values
-                woe_values = []
+                # Get the bin intervals stored during fit
+                bins = woe_table['bin'].values
 
-                for value in X[col]:
-                    matched_woe = None
+                # Extract left and right edges from the intervals
+                # to reconstruct the bin boundaries
+                left_edges  = [b.left for b in bins]
+                right_edges = [b.right for b in bins]
 
-                    for i, interval in enumerate(bin_boundaries):
-                        try:
-                            if value in interval:
-                                matched_woe = woe_table.iloc[i]['WoE']
-                                break
-                        except Exception:
-                            continue
+                # Build a single sorted list of all bin edges
+                all_edges = sorted(set(left_edges + right_edges))
 
-                    # If value is outside all bins use the nearest boundary
-                    if matched_woe is None:
-                        if value <= bin_boundaries[0].left:
-                            matched_woe = woe_table.iloc[0]['WoE']
-                        else:
-                            matched_woe = woe_table.iloc[-1]['WoE']
+                # Build a mapping from bin interval to WoE value
+                woe_map = dict(zip(woe_table['bin'], woe_table['WoE']))
 
-                    woe_values.append(matched_woe)
+                # Use pd.cut with the same edges to assign bins vectorized
+                binned = pd.cut(
+                    X[col],
+                    bins=all_edges,
+                    include_lowest=True
+                )
 
-                X_woe[col] = woe_values
+                # Map each bin to its WoE value
+                # For values outside the bin range use the nearest WoE
+                woe_series = binned.map(woe_map)
+
+                # Fill any unmapped values with the median WoE of this feature
+                median_woe = woe_table['WoE'].median()
+                woe_series = woe_series.fillna(median_woe)
+
+                X_woe[col] = woe_series
 
             else:
-                woe_map = dict(zip(woe_table['bin'].astype(str), woe_table['WoE']))
-                # Unknown categories get WoE = 0 (neutral)
+                # For categorical features — direct lookup by category name
+                woe_map = dict(zip(
+                    woe_table['bin'].astype(str),
+                    woe_table['WoE']
+                ))
+
+                # Replace category with WoE value
+                # Unknown categories get WoE of 0 (neutral)
                 X_woe[col] = X[col].astype(str).map(woe_map).fillna(0)
 
         return X_woe
-
-
-    def get_woe_table(self, feature_name: str) -> pd.DataFrame:
-        """Return the WoE table for a specific feature."""
-        if feature_name not in self.woe_tables:
-            raise Exception(f"Feature '{feature_name}' not found.")
-        return self.woe_tables[feature_name]
-
-
-    def get_all_iv_values(self) -> pd.DataFrame:
-        """
-        Return total IV for every feature, sorted highest to lowest.
-        Used for feature selection in iv_selector.py.
-        """
-        iv_summary = [
-            {'feature': col, 'IV': table['IV_bin'].sum()}
-            for col, table in self.woe_tables.items()
-        ]
-
-        return (pd.DataFrame(iv_summary)
-                  .sort_values('IV', ascending=False)
-                  .reset_index(drop=True))
